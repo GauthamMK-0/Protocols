@@ -1,0 +1,12 @@
+# Local development and learning protocols lab
+protocols_lab/
+
+# Simulation & Build Artifacts
+*.vcd
+*.fst
+*.o
+*.d
+obj_dir/
+__pycache__/
+*.pyc
+.pytest_cache/
