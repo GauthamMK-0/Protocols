@@ -8,8 +8,10 @@ module baud_rate_gen #(
     output logic tick
 );
 
+    localparam int CALC_DIVISOR = (CLK_FREQ / (BAUD_RATE * 16));
     logic [15:0] d_reg;
-    assign d_reg = (divisor == 0) ? (CLK_FREQ / (BAUD_RATE * 16)) : divisor;
+    assign d_reg = (divisor != 16'd0) ? divisor : 
+                   (CALC_DIVISOR > 0) ? 16'(CALC_DIVISOR) : 16'd1;
 
     logic [15:0] count_reg;
 

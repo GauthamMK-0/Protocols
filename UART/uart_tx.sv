@@ -83,6 +83,8 @@ module uart_tx (
                     end
                 end
 
+                default: state <= IDLE;
+
             endcase
         end
     end

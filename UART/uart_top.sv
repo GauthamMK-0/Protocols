@@ -62,21 +62,22 @@ module uart_top #(
         .rst(rst),
         .tx_start(tx_start),
         .s_tick(s_tick),
-        .tx_data(tx_data),
+        .tx_data(tx_holding_reg),
         .tx(tx_pin),
         .tx_busy(tx_busy)
     );
 
-    // Auto-start logic: If FIFO is not empty and TX is not busy, start a new byte
-    // We need a small FSM or edge detector to pulse tx_start and tx_fifo_pop
-    typedef enum logic {TX_IDLE, TX_START_BYTE} tx_fsm_t;
+    // Auto-start logic: If FIFO is not empty and TX is not busy, pull byte and start TX
+    typedef enum logic [1:0] {TX_IDLE, TX_START_WAIT, TX_WAIT_DONE} tx_fsm_t;
     tx_fsm_t tx_fsm_state;
+    logic [7:0] tx_holding_reg;
 
     always_ff @(posedge clk or posedge rst) begin
         if (rst) begin
-            tx_fsm_state <= TX_IDLE;
-            tx_start     <= 0;
-            tx_fifo_pop  <= 0;
+            tx_fsm_state   <= TX_IDLE;
+            tx_start       <= 0;
+            tx_fifo_pop    <= 0;
+            tx_holding_reg <= 0;
         end
         else begin
             tx_start    <= 0;
@@ -84,14 +85,23 @@ module uart_top #(
             case (tx_fsm_state)
                 TX_IDLE: begin
                     if (!tx_fifo_empty && !tx_busy) begin
-                        tx_fifo_pop  <= 1; // Pull from FIFO
-                        tx_fsm_state <= TX_START_BYTE;
+                        tx_holding_reg <= tx_data;
+                        tx_fifo_pop    <= 1;
+                        tx_start       <= 1;
+                        tx_fsm_state   <= TX_START_WAIT;
                     end
                 end
-                TX_START_BYTE: begin
-                    tx_start     <= 1; // Pulse tx_start
-                    tx_fsm_state <= TX_IDLE;
+                TX_START_WAIT: begin
+                    if (tx_busy) begin
+                        tx_fsm_state <= TX_WAIT_DONE;
+                    end
                 end
+                TX_WAIT_DONE: begin
+                    if (!tx_busy) begin
+                        tx_fsm_state <= TX_IDLE;
+                    end
+                end
+                default: tx_fsm_state <= TX_IDLE;
             endcase
         end
     end

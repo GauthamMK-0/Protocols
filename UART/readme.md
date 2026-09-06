@@ -1,161 +1,98 @@
-# UART Protocol Modules
+# UART Protocol Architecture Specification
+**Universal Asynchronous Receiver/Transmitter - Serial Telemetry & Bring-Up Microarchitecture**
 
-This directory contains a simple UART transmitter and receiver implemented in SystemVerilog.
-The UART modules support 8-bit data transfers at a configurable baud rate and clock frequency.
+---
 
-## Overview
+## 1. Overview & Purpose in Modern AI Accelerators
 
-UART (Universal Asynchronous Receiver/Transmitter) is a serial communication protocol that sends data one bit at a time over a single wire.
-It uses a fixed baud rate and frames each byte with a start bit and a stop bit.
+**UART (Universal Asynchronous Receiver/Transmitter)** is the universal serial communication interface in modern hardware engineering.
 
-This project includes:
-- `uart_tx.sv`: UART transmitter module
-- `uart_rx.sv`: UART receiver module
+### Where UART is Used in AI Hardware:
+- **Silicon Bring-Up & Debug Console**: The first interface connected during initial chip tapeout power-on to output bootloader messages and hardware self-test diagnostics.
+- **Microcontroller Telemetry**: Streaming thermal temperatures, voltage rails, and power consumption telemetry from Power Management ICs (PMICs) to the host BMC.
+- **Edge AI Sensor Ingestion**: Streaming low-bitrate sensor streams (audio tokens, IMU motion vectors) into TinyML neural processors.
 
-## How UART Works Here
+---
 
-Each UART frame consists of:
-1. Start bit: logic `0`
-2. Data bits: 8 bits, least-significant bit first
-3. Stop bit: logic `1`
+## 2. Frame Architecture & Asynchronous Sampling
 
-The modules derive their internal timing from a system clock and the `BAUD_RATE` parameter.
-The number of clock cycles per UART bit is calculated as:
+Because UART is **asynchronous** (there is no shared clock wire between TX and RX), both sides must agree on a predefined **Baud Rate** (e.g. 115,200 baud).
 
 ```
-CLKS_PER_BIT = CLK_FREQ / BAUD_RATE
+Idle (1) ---> [Start Bit: 0] ---> [8 Data Bits: D0..D7 (LSB First)] ---> [Stop Bit: 1] ---> Idle (1)
 ```
 
-This divides the system clock into precise intervals for sending or sampling each UART bit.
+```
+Bit Duration:  |<--- T_bit --->|
+RX Line:       ____/‾‾‾‾‾‾‾‾‾‾‾\___________________/‾‾‾‾‾‾‾‾‾‾‾\___________
+Sampling:               ^ (Sample at T_bit / 2 in the exact middle)
+```
 
-## Transmitter (`uart_tx.sv`)
+### Baud Rate Generation Formula:
+$$\text{CLKS\_PER\_BIT} = \frac{\text{CLK\_FREQ}}{\text{BAUD\_RATE}}$$
+For a 50 MHz clock and 115,200 baud:
+$$\text{CLKS\_PER\_BIT} = \frac{50,000,000}{115,200} \approx 434 \text{ clock cycles per bit}$$
 
-### Function
+---
 
-The transmitter accepts an 8-bit input `tx_data` and a `tx_start` request.
-When `tx_start` is asserted, the transmitter begins sending a full UART frame on the `tx` output.
-The `tx_busy` output indicates that a transfer is in progress.
+## 3. Hardware Datapath & State Machines
 
-### State machine
-
-The transmitter uses four states:
-- `IDLE`: wait for `tx_start`
-- `START`: drive the start bit (`0`)
-- `DATA`: shift out 8 data bits
-- `STOP`: drive the stop bit (`1`)
-
-### Dataflow
-
+### Transmitter FSM (`uart_tx.sv`):
 ```mermaid
-flowchart TD
-    A[tx_start asserted] --> B[Load tx_data into data_reg]
-    B --> C[START state: tx <= 0]
-    C --> D[DATA state: tx <= data_reg[bit_index]]
-    D --> E{bit_index < 7}
-    E -- yes --> F[bit_index += 1]
-    E -- no --> G[STOP state: tx <= 1]
-    G --> H[Return to IDLE]
+stateDiagram-v2
+    [*] --> IDLE: rst asserted (tx = 1)
+    IDLE --> START: tx_start asserted (tx <= 0, load data_reg)
+    START --> DATA: clk_cnt == CLKS_PER_BIT (tx <= data_reg[bit_index])
+    DATA --> DATA: bit_index < 7
+    DATA --> STOP: bit_index == 7 && clk_cnt == CLKS_PER_BIT (tx <= 1)
+    STOP --> IDLE: clk_cnt == CLKS_PER_BIT (tx_busy <= 0)
 ```
 
-### Timing
-
-- In `START`, the module holds `tx = 0` for `CLKS_PER_BIT` clock cycles.
-- In `DATA`, each bit is held for `CLKS_PER_BIT` cycles.
-- In `STOP`, the line is held high for `CLKS_PER_BIT` cycles.
-
-The transmitter is idle-high, so `tx` remains `1` when no transmission is active.
-
-## Receiver (`uart_rx.sv`)
-
-### Function
-
-The receiver monitors the serial input `rx`.
-When it sees a falling edge to `0`, it begins sampling the incoming frame.
-At the end of a valid frame, the received byte appears on `rx_data` and `rx_done` pulses high.
-
-### State machine
-
-The receiver also uses four states:
-- `IDLE`: wait for a start bit (`rx == 0`)
-- `START`: validate the start bit at the middle of the bit period
-- `DATA`: sample 8 data bits
-- `STOP`: wait for the stop bit and finalize the byte
-
-### Dataflow
-
+### Receiver FSM & Mid-Bit Sampling (`uart_rx.sv`):
 ```mermaid
-flowchart TD
-    A[rx line idle high] --> B[Detect rx == 0]
-    B --> C[START state: wait half bit period]
-    C --> D[Confirm start bit still 0]
-    D --> E[DATA state: sample rx each bit period]
-    E --> F[Store sampled bit into data_reg[bit_index]]
-    F --> G{bit_index < 7}
-    G -- yes --> H[bit_index += 1]
-    G -- no --> I[STOP state: wait full stop bit period]
-    I --> J[Output rx_data and assert rx_done]
-    J --> K[Return to IDLE]
+stateDiagram-v2
+    [*] --> IDLE: rst asserted
+    IDLE --> START: rx == 0 detected (Falling edge)
+    START --> DATA: clk_cnt == CLKS_PER_BIT/2 (Confirm rx is still 0)
+    DATA --> DATA: sample rx every CLKS_PER_BIT -> store in data_reg[bit_index]
+    DATA --> STOP: bit_index == 7
+    STOP --> IDLE: clk_cnt == CLKS_PER_BIT (Pulse rx_done = 1, output rx_data)
 ```
 
-### Timing and sampling
+---
 
-- In `START`, the receiver waits `CLKS_PER_BIT / 2` cycles to sample near the middle of the start bit.
-- In `DATA`, it samples each bit once every `CLKS_PER_BIT` cycles.
-- In `STOP`, it waits one full bit period before accepting the next frame.
+## 4. Signal Architecture
 
-This mid-bit sampling improves noise immunity and ensures stable data capture.
+| Signal Name | Module | Direction | Width | Description |
+|---|---|---|---|---|
+| `clk` | Global | In | 1 | System clock |
+| `rst` | Global | In | 1 | Active-high reset |
+| `tx_start` | TX | In | 1 | Trigger to start transmitting byte |
+| `tx_data` | TX | In | 8 | 8-bit byte to transmit |
+| `tx` | TX | Out | 1 | Serial output line (idle high) |
+| `tx_busy` | TX | Out | 1 | High during transmission |
+| `rx` | RX | In | 1 | Serial input line |
+| `rx_data` | RX | Out | 8 | 8-bit received byte |
+| `rx_done` | RX | Out | 1 | 1-cycle reception complete strobe |
 
-## Parameterization
+---
 
-Both modules use the same parameters:
-- `CLK_FREQ`: system clock frequency in hertz (default `50_000_000`)
-- `BAUD_RATE`: UART baud rate (default `115200`)
+## 5. Architectural Choices & Hardware Design Decisions
 
-Adjust these parameters to match the clock domain and serial speed of your design.
+1. **Mid-Bit Sampling (`CLKS_PER_BIT / 2`)**:
+   - In the `START` state, waiting half a bit period before sampling aligns the receiver clock to the exact middle of each incoming bit, providing maximum tolerance against baud rate drift, jitter, and rise-time slew.
+2. **Idle-High Line State**:
+   - Holding `tx = 1` and `rx = 1` during idle allows hardware to detect broken wires or disconnected cables immediately (which pull the line to constant logic `0`).
+3. **FIFO Buffering**:
+   - Integrating a hardware circular FIFO behind `rx_data` decouples byte reception from CPU polling intervals, preventing overrun errors under high CPU load.
 
-## Example Usage
+---
 
-### Transmitter
+## 6. Summary
 
-```verilog
-uart_tx #(
-    .CLK_FREQ(50_000_000),
-    .BAUD_RATE(115200)
-) tx_inst (
-    .clk(clk),
-    .rst(rst),
-    .tx_start(tx_start),
-    .tx_data(tx_byte),
-    .tx(tx_line),
-    .tx_busy(tx_busy)
-);
-```
-
-### Receiver
-
-```verilog
-uart_rx #(
-    .CLK_FREQ(50_000_000),
-    .BAUD_RATE(115200)
-) rx_inst (
-    .clk(clk),
-    .rst(rst),
-    .rx(rx_line),
-    .rx_data(rx_byte),
-    .rx_done(rx_done)
-);
-```
-
-## Notes
-
-- The receiver does not implement parity or framing error detection.
-- The transmitter is ready to send again after the stop bit completes and returns to `IDLE`.
-- The receiver asserts `rx_done` for one cycle when a byte has been received.
-
-## Summary
-
-These modules form a simple synchronous UART link:
-- `uart_tx` converts parallel bytes into asynchronous serial frames.
-- `uart_rx` converts those serial frames back into parallel bytes.
-
-The state machines and clock-derived timing ensure reliable bit-level transmission and reception at the chosen baud rate.
+The complete UART subsystem comprises:
+- `uart_tx.sv`: Parallel-to-serial transmitter.
+- `uart_rx.sv`: Serial-to-parallel mid-bit sampling receiver.
+- `baud_rate_gen.sv`: Precise integer clock divider.
+- `fifo.sv`: Circular FIFO queue for buffering characters.
+- `uart_top.sv`: Top-level loopback/interconnect wrapper.
