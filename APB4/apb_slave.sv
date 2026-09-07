@@ -93,14 +93,14 @@ module apb_slave #(
     // Sequential Register Write Logic with Byte Strobes, W1C, and Security Gating
     always_ff @(posedge pclk or negedge presetn) begin
         if (!presetn) begin
-            reg_mem[0] <= 'h0000_0000;
-            reg_mem[1] <= 'h1234_5678;
-            reg_mem[2] <= 'h0000_00A5; // Default hardware status flag
-            reg_mem[3] <= 'h0000_0040;
-            reg_mem[4] <= 'h0000_0000; // W1C
-            if (NUM_REGS > 5) reg_mem[5] <= 'h0000_CAFE; // Privileged
-            if (NUM_REGS > 6) reg_mem[6] <= 'hDEAD_BEEF; // TrustZone Secure
-            if (NUM_REGS > 7) reg_mem[7] <= 'h5A5A_F00F; // Secure & Privileged
+            reg_mem[0] <= DATA_WIDTH'('h0000_0000);
+            reg_mem[1] <= DATA_WIDTH'('h1234_5678);
+            reg_mem[2] <= DATA_WIDTH'('h0000_00A5); // Default hardware status flag
+            reg_mem[3] <= DATA_WIDTH'('h0000_0040);
+            reg_mem[4] <= DATA_WIDTH'('h0000_0000); // W1C
+            if (NUM_REGS > 5) reg_mem[5] <= DATA_WIDTH'('h0000_CAFE); // Privileged
+            if (NUM_REGS > 6) reg_mem[6] <= DATA_WIDTH'('hDEAD_BEEF); // TrustZone Secure
+            if (NUM_REGS > 7) reg_mem[7] <= DATA_WIDTH'('h5A5A_F00F); // Secure & Privileged
             for (int i = 8; i < NUM_REGS; i++) begin
                 reg_mem[i] <= '0;
             end
